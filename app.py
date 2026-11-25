@@ -1,4 +1,4 @@
-"""LogSentry: Hybrid ML & LLM Log Anomaly Root-Cause Analyzer.
+"""TracePulse: Hybrid ML & LLM Log Anomaly Root-Cause Analyzer.
 
 Interactive Streamlit web dashboard providing:
 - Log ingestion & synthetic log generation
@@ -11,7 +11,6 @@ Interactive Streamlit web dashboard providing:
 from __future__ import annotations
 
 import io
-import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -23,17 +22,17 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-# Import LogSentry pipeline components
+# Import TracePulse pipeline components
 from src.detector import LogAnomalyDetector
 from src.log_generator import SyntheticLogGenerator
 from src.parser import LogParser
-from src.rca_engine import IncidentGrouper, IncidentReport, IncidentWindow, RCAEngine
+from src.rca_engine import IncidentGrouper, IncidentReport, RCAEngine
 
 load_dotenv()
 
 # Streamlit Page Config
 st.set_page_config(
-    page_title="LogSentry — Hybrid ML & LLM Log Anomaly RCA",
+    page_title="TracePulse — Hybrid ML & LLM Log Anomaly RCA",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -88,14 +87,6 @@ st.markdown(
         background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%);
     }
 
-    .remediation-box {
-        background-color: #0b1329;
-        border-left: 4px solid #38bdf8;
-        padding: 10px 14px;
-        border-radius: 4px;
-        margin-top: 10px;
-    }
-
     .badge-pill {
         display: inline-block;
         background-color: #334155;
@@ -134,7 +125,7 @@ st.sidebar.image(
     "https://img.icons8.com/fluency/96/shield.png",
     width=64,
 )
-st.sidebar.title("LogSentry")
+st.sidebar.title("TracePulse")
 st.sidebar.caption("Two-Stage Unsupervised ML & LLM RCA Pipeline")
 st.sidebar.divider()
 
@@ -220,13 +211,13 @@ st.sidebar.markdown(
 
 # ---------------- Main Dashboard View ----------------
 
-st.title("LogSentry: Hybrid ML & LLM Log Anomaly Root-Cause Analyzer")
+st.title("TracePulse: Hybrid ML & LLM Log Anomaly Root-Cause Analyzer")
 st.markdown(
     "Ingests application telemetry, identifies statistical outliers via unsupervised **Isolation Forest**, "
     "clusters alerts into temporal incident windows, and generates actionable **Root-Cause Diagnostics**."
 )
 
-if not raw_log_content:
+if not raw_log_content or not raw_log_content.strip():
     st.warning("Please upload a log file or select 'Use Generated Demo Logs' from the sidebar to start analysis.")
     st.stop()
 
@@ -237,6 +228,9 @@ with st.spinner("Parsing log lines and engineering statistical features..."):
     parser = LogParser()
     try:
         df_parsed = parser.parse_lines(log_lines)
+        if df_parsed.empty:
+            st.info("No valid structured log records found in the provided input.")
+            st.stop()
         df_featured, feature_matrix = parser.engineer_features(df_parsed)
     except Exception as e:
         st.error(f"Failed to parse logs: {e}")
@@ -272,13 +266,9 @@ st.markdown("<br/>", unsafe_allow_html=True)
 # ---------------- Interactive Telemetry Visualization ----------------
 st.subheader("📈 Telemetry Timeline & Anomaly Detection")
 
-# Prepare visualization dataframe
 viz_df = df_results.copy()
 viz_df["time_display"] = viz_df["timestamp"].dt.strftime("%H:%M:%S")
 viz_df["anomaly_status"] = np.where(viz_df["is_anomaly"], "Anomaly (Isolation Forest)", "Normal Baseline")
-
-# Altair Interactive Scatter Plot
-brush = alt.selection_interval(encodings=["x"])
 
 base_chart = (
     alt.Chart(viz_df)
@@ -326,7 +316,6 @@ st.subheader(f"🔍 Root-Cause Analysis Incidents ({len(incidents)} Discovered)"
 if not incidents:
     st.info("No anomaly clusters detected with current contamination threshold. Try adjusting the slider in the sidebar.")
 else:
-    # Run RCA Engine
     force_heuristic = not use_llm_mode
     rca_reports: List[IncidentReport] = []
 
@@ -341,7 +330,6 @@ else:
             f"🚨 [{report.severity}] {inc.incident_id} — {report.incident_title} ({inc.service})",
             expanded=True,
         ):
-            # Card header metrics
             c_meta1, c_meta2, c_meta3, c_meta4 = st.columns(4)
             c_meta1.markdown(f"**Target Service:** `{inc.service}`")
             c_meta2.markdown(f"**Anomalous Events:** `{inc.log_count}` logs")
@@ -360,21 +348,17 @@ else:
                 unsafe_allow_html=True,
             )
 
-            # Technical Root Cause
             st.markdown("**🔬 Root-Cause Diagnostic:**")
             st.info(report.root_cause)
 
-            # Affected Components
             st.markdown("**📦 Impacted Components & Dependencies:**")
             badges_html = " ".join([f'<span class="badge-pill">{c}</span>' for c in report.affected_components])
             st.markdown(badges_html, unsafe_allow_html=True)
 
-            # Remediation Steps
             st.markdown("**🛠️ Actionable Remediation Steps:**")
             for idx, step in enumerate(report.remediation_steps, start=1):
                 st.markdown(f"**{idx}.** {step}")
 
-            # Raw Anomalous Log Snippets
             with st.expander("📄 View Triggering Log Snippets"):
                 snippet_df = inc.logs[
                     ["timestamp_str", "level", "service", "endpoint", "latency_ms", "status_code", "message"]
@@ -390,7 +374,6 @@ available_services = ["All Services"] + sorted(df_results["service"].unique().to
 filter_service = f_col2.selectbox("Filter by Service", available_services)
 search_query = f_col3.text_input("Search Log Messages", "")
 
-# Apply filters
 filtered_df = df_results.copy()
 if filter_status == "Anomalies Only":
     filtered_df = filtered_df[filtered_df["is_anomaly"]]
@@ -427,6 +410,6 @@ filtered_df[display_cols].to_csv(csv_buffer, index=False)
 st.download_button(
     label="📥 Download Filtered Telemetry (CSV)",
     data=csv_buffer.getvalue(),
-    file_name=f"logsentry_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+    file_name=f"tracepulse_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
     mime="text/csv",
 )

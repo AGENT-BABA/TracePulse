@@ -1,4 +1,4 @@
-"""Incident Grouping and Root-Cause Analysis (RCA) Engine.
+"""Incident Grouping and Root-Cause Analysis (RCA) Engine for TracePulse.
 
 Deduplicates contiguous anomalous log occurrences into distinct incident windows
 and generates structured Pydantic diagnostics using modern OpenAI API or
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 from dotenv import load_dotenv
 import pandas as pd
@@ -56,14 +56,26 @@ class IncidentWindow:
         self.incident_id = incident_id
         self.service = service
         self.logs = logs
-        self.start_time: datetime = logs["timestamp"].min()
-        self.end_time: datetime = logs["timestamp"].max()
-        self.log_count: int = len(logs)
-        self.avg_latency: float = round(float(logs["latency_ms"].mean()), 2)
-        self.max_latency: float = round(float(logs["latency_ms"].max()), 2)
-        self.status_codes: List[int] = sorted(list(set(logs["status_code"].tolist())))
-        self.dominant_status: int = int(logs["status_code"].mode()[0]) if not logs.empty else 200
-        self.sample_messages: List[str] = logs["message"].head(8).tolist()
+        if not logs.empty:
+            self.start_time: datetime = logs["timestamp"].min()
+            self.end_time: datetime = logs["timestamp"].max()
+            self.log_count: int = len(logs)
+            self.avg_latency: float = round(float(logs["latency_ms"].mean()), 2)
+            self.max_latency: float = round(float(logs["latency_ms"].max()), 2)
+            self.status_codes: List[int] = sorted(list(set(logs["status_code"].tolist())))
+            modes = logs["status_code"].mode()
+            self.dominant_status: int = int(modes[0]) if not modes.empty else 200
+            self.sample_messages: List[str] = logs["message"].head(8).tolist()
+        else:
+            now = datetime.now()
+            self.start_time = now
+            self.end_time = now
+            self.log_count = 0
+            self.avg_latency = 0.0
+            self.max_latency = 0.0
+            self.status_codes = []
+            self.dominant_status = 200
+            self.sample_messages = []
 
     def duration_seconds(self) -> float:
         """Calculate incident duration in seconds."""
@@ -166,7 +178,7 @@ class RCAEngine:
         all_text = " ".join(incident.sample_messages).lower()
         service = incident.service
 
-        # Heuristic 1: Memory Leak / JVM Heap Exhaustion (Priority check before generic 'pool' matches)
+        # Heuristic 1: Memory Leak / JVM Heap Exhaustion
         if (
             "outofmemoryerror" in all_text
             or "heap space" in all_text
@@ -193,7 +205,7 @@ class RCAEngine:
 
         # Heuristic 2: Credential Stuffing / Auth Spike
         if (
-            "401" in str(incident.status_codes)
+            401 in incident.status_codes
             or "credential" in all_text
             or "stuffing" in all_text
             or "authentication failure" in all_text
@@ -310,25 +322,26 @@ class RCAEngine:
                 if report:
                     return report
             except Exception:
-                # Fallback to standard chat completion with JSON mode
-                response = client.chat.completions.create(
-                    model=self.model_name,
-                    messages=[
-                        {"role": "system", "content": system_prompt + " Output valid JSON conforming to IncidentReport schema."},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=0.2,
-                )
-                content = response.choices[0].message.content or "{}"
-                data = json.loads(content)
-                data["incident_id"] = incident.incident_id
-                return IncidentReport(**data)
+                pass
 
-        except Exception as e:
-            # If any API error occurs (auth, quota, network), fallback gracefully
-            fallback = self._fallback_diagnose(incident)
-            return fallback
+            # Fallback to standard chat completion with JSON mode
+            response = client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt + " Output valid JSON conforming to IncidentReport schema."},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+            )
+            content = response.choices[0].message.content or "{}"
+            data = json.loads(content)
+            data["incident_id"] = incident.incident_id
+            return IncidentReport(**data)
+
+        except Exception:
+            # If any API error occurs (auth, quota, network, parse error), fallback gracefully
+            return self._fallback_diagnose(incident)
 
     def analyze_all_incidents(
         self,

@@ -1,10 +1,10 @@
-"""Synthetic Log Generator for LogSentry.
+"""Synthetic Log Generator for TracePulse.
 
 Generates realistic microservice system/API logs in standard format:
 YYYY-MM-DD HH:MM:SS,mmm | LEVEL | SERVICE | ENDPOINT | LATENCY_MS | STATUS_CODE | MESSAGE
 
-Produces ~1,500 normal operational logs (~97%) and injects 3 distinct
-anomaly clusters (~45 logs, ~3%):
+Produces normal baseline operational logs (~97%) and injects 3 distinct
+anomaly clusters (~3%):
 1. Database Connection Pool Exhaustion (order-api, 503, high latency)
 2. Credential Stuffing / Auth Spike (auth-service, 401 burst, /api/v1/login)
 3. Memory Leak / OOM Crash (payment-gateway, rising latency + 500 OutOfMemoryError)
@@ -12,7 +12,6 @@ anomaly clusters (~45 logs, ~3%):
 
 from __future__ import annotations
 
-import os
 import random
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -104,9 +103,10 @@ class SyntheticLogGenerator:
         self.seed = seed
         random.seed(seed)
 
-    def _format_timestamp(self, dt: datetime) -> str:
-        """Format timestamp as YYYY-MM-DD HH:MM:SS,mmm."""
-        return dt.strftime("%Y-%m-%d %H:%M:%S,") + f"{int(dt.microsecond / 1000):03d}"
+    @staticmethod
+    def _format_timestamp(dt: datetime) -> str:
+        """Format timestamp as YYYY-MM-DD HH:MM:SS,mmm efficiently."""
+        return dt.strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
 
     def _generate_normal_entry(self, current_time: datetime) -> Tuple[datetime, str]:
         """Generate a single normal baseline log entry."""
@@ -118,10 +118,10 @@ class SyntheticLogGenerator:
         endpoint = random.choice(cfg["endpoints"])
         raw_msg = random.choice(cfg["messages"])
 
-        # Realistic normal latency (20ms to 180ms with log-normal centering around 50ms)
+        # Realistic normal latency (20ms to 180ms with normal centering around 55ms)
         latency = round(min(180.0, max(20.0, random.gauss(55.0, 24.0))), 2)
 
-        # Baseline level and status code (98% 200/201, 2% mild WARN)
+        # Baseline level and status code (97.5% 200/201, 2.5% mild WARN)
         if random.random() < 0.025:
             level = "WARN"
             status = random.choice([200, 204])
@@ -201,7 +201,7 @@ class SyntheticLogGenerator:
         service = "auth-service"
         endpoint = "/api/v1/login"
         attacker_ip = "198.51.100.42"
-        usernames = ["admin", "root", "administrator", "sysadmin", "service_account", "test_user", "api_key"]
+        usernames = ["admin", "root", "administrator", "sysadmin", "service_account", "test_user"]
 
         for _ in range(count):
             curr += timedelta(milliseconds=random.randint(200, 800))
@@ -246,7 +246,6 @@ class SyntheticLogGenerator:
         service = "payment-gateway"
         endpoint = "/api/v1/payments/process"
 
-        # Progressive latency climb leading to OOM crash
         base_latencies = [750, 1200, 1900, 2800, 3900, 5200, 6800, 7900, 8400, 8900, 9200, 9500, 9700, 9850, 9900]
 
         for i in range(count):
@@ -291,30 +290,36 @@ class SyntheticLogGenerator:
     ) -> List[str]:
         """Generate a complete chronologically ordered stream of normal and anomalous logs."""
         if start_time is None:
-            # Deterministic reference window for clean analytics: 2026-11-25 09:00:00
             start_time = datetime(2026, 11, 25, 9, 0, 0)
 
         all_entries: List[Tuple[datetime, str]] = []
 
-        # Generate normal baseline logs spread over ~30 minutes
         curr_time = start_time
+        # For large volumes (e.g. 50,000), advance time by smaller increments so time stays compact
+        step_ms = max(20, min(1200, int(1800000 / max(normal_count, 1))))
+
         for _ in range(normal_count):
-            curr_time += timedelta(milliseconds=random.randint(800, 1600))
+            curr_time += timedelta(milliseconds=random.randint(step_ms // 2, step_ms * 2))
             all_entries.append(self._generate_normal_entry(curr_time))
 
-        total_span = (curr_time - start_time).total_seconds()
+        total_span = max(1.0, (curr_time - start_time).total_seconds())
+
+        # Scale cluster sizes proportionally if generating high volume
+        c1_count = max(16, min(50, int(normal_count * 0.01)))
+        c2_count = max(18, min(60, int(normal_count * 0.012)))
+        c3_count = max(15, min(50, int(normal_count * 0.01)))
 
         # Inject Cluster 1: Database Connection Pool Exhaustion at ~25% timestamp
         t_cluster1 = start_time + timedelta(seconds=total_span * 0.25)
-        all_entries.extend(self._generate_db_pool_cluster(t_cluster1, count=16))
+        all_entries.extend(self._generate_db_pool_cluster(t_cluster1, count=c1_count))
 
         # Inject Cluster 2: Credential Stuffing / Auth Spike at ~55% timestamp
         t_cluster2 = start_time + timedelta(seconds=total_span * 0.55)
-        all_entries.extend(self._generate_auth_stuffing_cluster(t_cluster2, count=18))
+        all_entries.extend(self._generate_auth_stuffing_cluster(t_cluster2, count=c2_count))
 
         # Inject Cluster 3: Memory Leak / OOM Crash at ~80% timestamp
         t_cluster3 = start_time + timedelta(seconds=total_span * 0.80)
-        all_entries.extend(self._generate_oom_leak_cluster(t_cluster3, count=15))
+        all_entries.extend(self._generate_oom_leak_cluster(t_cluster3, count=c3_count))
 
         # Sort all entries chronologically by timestamp
         all_entries.sort(key=lambda x: x[0])
@@ -337,7 +342,7 @@ def main() -> None:
     data_dir = project_root / "data"
     output_file = data_dir / "sample_logs.log"
 
-    print(f"Generating synthetic logs with LogSentry generator...")
+    print("Generating synthetic logs with TracePulse generator...")
     generator = SyntheticLogGenerator(seed=42)
     saved_path = generator.save_to_file(output_file, normal_count=1500)
     print(f"Successfully generated sample logs at: {saved_path}")

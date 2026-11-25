@@ -1,4 +1,4 @@
-"""Unsupervised Anomaly Detector for LogSentry.
+"""Unsupervised Anomaly Detector for TracePulse.
 
 Implements Isolation Forest anomaly detection with severity scoring,
 contamination thresholding, and latency profiling.
@@ -42,6 +42,24 @@ class LogAnomalyDetector:
         Returns:
             Tuple of (annotated_dataframe, detection_metrics_dict)
         """
+        # Edge case: Empty input
+        if df.empty or feature_matrix.shape[0] == 0:
+            df_out = df.copy()
+            df_out["anomaly_label"] = pd.Series(dtype=int)
+            df_out["is_anomaly"] = pd.Series(dtype=bool)
+            df_out["raw_decision_score"] = pd.Series(dtype=float)
+            df_out["anomaly_severity"] = pd.Series(dtype=float)
+            metrics: Dict[str, Any] = {
+                "total_logs": 0,
+                "anomalies_detected": 0,
+                "normal_logs": 0,
+                "anomaly_rate_pct": 0.0,
+                "contamination_parameter": self.contamination,
+                "n_estimators": self.n_estimators,
+                "inference_time_ms": 0.0,
+            }
+            return df_out, metrics
+
         start_time = time.perf_counter()
 
         self.model = IsolationForest(
@@ -65,12 +83,10 @@ class LogAnomalyDetector:
 
         # Anomaly severity score: inverted and normalized so higher score (0.0 to 1.0)
         # represents greater severity/anomaly strength
-        # raw_scores typically range from ~ -0.4 (extreme anomaly) to +0.25 (typical normal)
         min_score = float(np.min(raw_scores))
         max_score = float(np.max(raw_scores))
         score_range = max(max_score - min_score, 1e-6)
 
-        # Invert: lowest raw score -> anomaly_severity = 1.0; highest raw score -> 0.0
         df_out["raw_decision_score"] = raw_scores
         df_out["anomaly_severity"] = np.round((max_score - raw_scores) / score_range, 4)
 
@@ -78,7 +94,7 @@ class LogAnomalyDetector:
         anomalies_detected = int((df_out["is_anomaly"]).sum())
         anomaly_rate_pct = round((anomalies_detected / total_logs) * 100, 2) if total_logs > 0 else 0.0
 
-        metrics: Dict[str, Any] = {
+        metrics = {
             "total_logs": total_logs,
             "anomalies_detected": anomalies_detected,
             "normal_logs": total_logs - anomalies_detected,
