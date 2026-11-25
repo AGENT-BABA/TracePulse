@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Streamlit
+.streamlit/
+
+# Environment Variables
+.env
+
+# Windows / IDEs
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+powershell.cmd
+python.cmd
+streamlit.cmd
